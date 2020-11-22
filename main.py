@@ -4,6 +4,7 @@ Watermarks allocator
 Allows to process several images and automatically choose suitable
 allocations for watermarks. See readme.md for more info.
 """
+import argparse
 import cv2
 import pytesseract
 import os
@@ -35,54 +36,94 @@ def scale_generator(min_scale):
         yield wmark_scale_to_yield
 
 
-# User defined constants.
+# LITERALS
 # Delta which gets added to X and Y coords during finding of areas suitable
 # for watermark.
 STEP = 16
-# Can be between 0.1 and 1.0, inclusively.
-MIN_SCALE: float = .2
-CANNY_THRESHOLD_1 = 120
-CANNY_THRESHOLD_2 = 120
-TESSERACT_PATH = 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
-INPUT_IMGS_DIR_NAME = 'input_images'
-OUTPUT_IMGS_DIR_NAME = 'output_images'
-WM_PATH = 'python watermark.png'
+CANNY_THRESHOLD_1 = 50
+CANNY_THRESHOLD_2 = 100
 SHOW_WMARK_AREA_OUTLINES = False
-# Percent of input image coverage by watermarks.
-COVERAGE = 70
 
-# Whether to use Tesseract and additional checks.
-USE_OCR = False
-USE_DARK_PIXELS_PRESENCE_CHECK = False
-USE_EDGES_PRESENCE_CHECK = True
-
-# Consts related to suitable area additional checks.
-# If an image area contains pixels with a lower value, no watermark
-# would be placed there. Should be between 1 and 255.
+# LITERALS RELATED TO IMAGE AREA SUITABILITY CHECKS
+# If an image area contains pixels with a lower value in amount of greater than
+# DARK_PXLS_ALLOWED_AMOUNT, no watermark would be placed there.
+# Should be between 1 and 255.
 DARK_PXLS_THRESHOLD = 80
-EDGE_PXLS_ALLOWED_AMOUNT = 10
 DARK_PXLS_ALLOWED_AMOUNT = 20
+EDGE_PXLS_ALLOWED_AMOUNT = 10
+
+# READ PROGRAM ARGUMENTS
+script_description = 'Watermarks allocator. ' + __doc__.split('\n\n')[1]
+arg_parser = argparse.ArgumentParser(description=script_description)
+arg_parser.add_argument(
+    '-w', '--wm_path', required=True,
+    help='Path to watermark image (can have transparency).'
+)
+arg_parser.add_argument(
+    '-i', '--input_dir', required=True,
+    help='Path to the input directory of images.'
+)
+arg_parser.add_argument(
+    '-o', '--output_dir', required=True,
+    help='Path to the output directory.'
+)
+arg_parser.add_argument(
+    '-ms', '--min_scale', type=float, default=.5,
+    help='Minimal scale which watermark will be resized to. Can be between 0.1 and 1.0, inclusively. Default value is 0.5.'
+)
+arg_parser.add_argument(
+    '-ut', '--use_tesseract', type=bool, default=0,
+    help='0 means the script will not use OCR (Tesseract-OCR) to not allocate watermarks onto text, 1 means the opposite. Use of Tesseract increases execution time but can improve accuracy especially when text color doesn\'t much contrast with background. Default value is 0.'
+)
+arg_parser.add_argument(
+    '-t', '--tesseract_path', default='C:\\Program Files\\Tesseract-OCR\\tesseract.exe',
+    help='Full path to Tesseract-OCR. Default value is "C:\\Program Files\\Tesseract-OCR\\tesseract.exe". Is used only if --use_tesseract is 1 or True.'
+)
+arg_parser.add_argument(
+    '-cdp', '--consider_dark_pixels', type=int, default=0,
+    help='1 means the script will not allocate watermarks on areas having dark pixels, 0 means the script will ignore the factor during area suitability check. Default value is 0.'
+)
+arg_parser.add_argument(
+    '-ce', '--consider_edges', type=int, default=1,
+    help='1 means the script will not allocate watermarks on areas having edges (sharp transition of colors), 0 means the script will ignore the factor during area suitability check. Default value is 1.'
+)
+arg_parser.add_argument(
+    '-uap', '--used_areas_percentage', type=int, default=70,
+    help='Percentage of image suitable areas where watermarks will be inserted to.'
+)
+# Read arguments values.
+args = vars(arg_parser.parse_args())
+wm_path = args['wm_path']
+input_dir = args['input_dir']
+output_dir = args['output_dir']
+min_wm_scale: float = args['min_scale']
+# Whether to use Tesseract.
+use_OCR = args['use_tesseract']
+tesseract_path = args['tesseract_path']
+consider_dark_pixels = args['consider_dark_pixels']
+consider_edges = args['consider_edges']
+used_areas_percentage = args['used_areas_percentage']
 
 # Generated constants.
 program_dir = os.path.abspath(os.path.dirname(__file__))
 start_t = time()
 
-if USE_OCR:
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-
-# Check whether file paths.
-if not os.path.exists(WM_PATH):
+if use_OCR:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_path
+# Check paths for existence.
+if not os.path.exists(wm_path):
     print('ERROR: Such watermark image file doesn\'n exist!')
     exit(1)
-if not os.path.exists(INPUT_IMGS_DIR_NAME):
-    print(f'ERROR: "{INPUT_IMGS_DIR_NAME}" directory doesn\'t exist! Specify '
+if not os.path.exists(input_dir):
+    print(f'ERROR: "{input_dir}" directory doesn\'t exist! Specify '
           'another path for input images directory or create it and move '
           'images there.')
     exit(2)
-if not os.path.exists(OUTPUT_IMGS_DIR_NAME):
-    os.makedirs(OUTPUT_IMGS_DIR_NAME)
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
 
-wmark_img = cv2.imread(WM_PATH, cv2.IMREAD_UNCHANGED)
+# Read watermark image.
+wmark_img = cv2.imread(wm_path, cv2.IMREAD_UNCHANGED)
 (wm_h, wm_w) = wmark_img.shape[:2]
 # Opacity bug correction.
 (B, G, R, A) = cv2.split(wmark_img)
@@ -91,22 +132,23 @@ G = cv2.bitwise_and(G, G, mask=A)
 R = cv2.bitwise_and(R, R, mask=A)
 wmark_img = cv2.merge([B, G, R, A])
 
-# Scale watermark image.
-scaled_wmark_imgs = get_scaled_watermarks(wmark_img, MIN_SCALE)
+# Get scaled watermarks.
+scaled_wmark_imgs = get_scaled_watermarks(wmark_img, min_wm_scale)
 
-# Process all images placed in INPUT_IMGS_DIR_NAME.
-input_files = os.listdir(INPUT_IMGS_DIR_NAME)
+# Process all images placed in input images directory.
+input_files = os.listdir(input_dir)
+# Filter images among all files existing in the directory.
 input_imgs = list(filter(
     lambda file: file[file.rfind('.') + 1:] in ('png', 'jpg', 'jpeg'),
     input_files
 ))
 if len(input_imgs) == 0:
-    print(f'ERROR: "{INPUT_IMGS_DIR_NAME}" directory has no images!')
+    print(f'ERROR: "{input_dir}" directory has no images!')
     exit(3)
 for input_img_path in input_imgs:
-    print(f'{input_img_path} text detecting...')
+    print(f'"{input_img_path}" is being processed...')
     input_img_path = os.path.join(
-        program_dir, INPUT_IMGS_DIR_NAME, input_img_path
+        program_dir, input_dir, input_img_path
     )
     input_img = cv2.imread(input_img_path)
     input_img_h, input_img_w = input_img.shape[:2]
@@ -114,21 +156,16 @@ for input_img_path in input_imgs:
     input_img = np.dstack(
         [input_img, np.ones((input_img_h, input_img_w), dtype='uint8') * 255]
     )
-    # The processed images are used in suitable area additional checks.
+    # The processed images are used in suitable area checks.
     gr_input_img = cv2.cvtColor(input_img, cv2.COLOR_RGB2GRAY)
     blurred_gr_input_img = cv2.GaussianBlur(gr_input_img, (5, 5), 0)
     edges_input_img = cv2.Canny(
         blurred_gr_input_img, CANNY_THRESHOLD_1, CANNY_THRESHOLD_2
     )
-    # cv2.imshow('blurred', blurred_gr_input_img)
-    # cv2.imshow('edges', edges_input_img)
-    # cv2.waitKey(0)
-
-    # TODO: Add program arguments.
-
     # Detecting words.
     not_suitable_blocks = set()
-    if USE_OCR:
+    if use_OCR:
+        print(f'{input_img_path} text detecting in progress...')
         data = pytesseract.image_to_data(input_img, lang='eng+rus')
         for word_info in data.splitlines()[1:]:
             word_info = word_info.split()
@@ -138,7 +175,7 @@ for input_img_path in input_imgs:
 
     # Find areas to place watermarks of different sizes.
     suitable_areas = []
-    for wmark_scale in scale_generator(MIN_SCALE):
+    for wmark_scale in scale_generator(min_wm_scale):
         cur_scl_not_suitable_blocks = set(not_suitable_blocks)
         spinner = Spinner(
             f'Available space estimating for watermark scale {wmark_scale}...',
@@ -181,7 +218,7 @@ for input_img_path in input_imgs:
                         too_many_dark_pxls = dark_pxls_amount > DARK_PXLS_ALLOWED_AMOUNT
                         edge_pxls_amount = (edges_roi > 0).sum()
                         too_many_edges = edge_pxls_amount > EDGE_PXLS_ALLOWED_AMOUNT
-                        if not too_many_dark_pxls and not too_many_edges:
+                        if (not consider_dark_pixels or not too_many_dark_pxls) and (not consider_edges or not too_many_edges):
                             suitable_areas.append(
                                 {
                                     'rect_coords': potential_mark_rect,
@@ -200,7 +237,7 @@ for input_img_path in input_imgs:
 
     if len(suitable_areas) != 0:
         # Watermark partial coverage.
-        areas_to_use_amount = round(round(COVERAGE / 100, 3) * len(suitable_areas))
+        areas_to_use_amount = round(round(used_areas_percentage / 100, 3) * len(suitable_areas))
         # If areas_to_use_amount is 0, make it 1.
         areas_to_use_amount = areas_to_use_amount or 1
         shuffle(suitable_areas)
@@ -237,21 +274,21 @@ for input_img_path in input_imgs:
         img_G *= ov_A_wm_presence
         img_R *= ov_A_wm_presence
         inp_img_cutout = cv2.merge([img_B // 2, img_G // 2, img_R // 2, img_A])
-        cv2.imshow('result', inp_img_cutout)
+        # cv2.imshow(f'inp_img_cutout for {input_img_path}', inp_img_cutout)
 
         # Blend the input image with the overlay.
         cv2.addWeighted(overlay, .7, input_img, 1.0, 0, input_img)
         cv2.addWeighted(inp_img_cutout, .7, input_img, 1.0, 0, input_img)
-        cv2.imshow(f'result for {input_img_path}', input_img)
+        # cv2.imshow(f'result for {input_img_path}', input_img)
+        # cv2.waitKey(0)
 
         # Save image with inserted watermark.
         inpt_img_name = input_img_path[input_img_path.rfind(os.path.sep) + 1:]
         result_img_path = os.path.join(
-            program_dir, OUTPUT_IMGS_DIR_NAME,
+            program_dir, output_dir,
             f'{inpt_img_name.partition(".")[0]}_processed.png'
         )
         cv2.imwrite(result_img_path, input_img)
-        cv2.waitKey(0)
     else:
         print(f'WARNING: image {input_img_path} has no suitable space to insert watermarks!')
 
